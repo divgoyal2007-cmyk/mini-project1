@@ -23,5 +23,5 @@ typedef struct{
 }Tokenlist;
 
 Tokenlist* token(char* input);
-void list_token(Tokenlist* list);
+void free_token(Tokenlist* list);
 #endif
