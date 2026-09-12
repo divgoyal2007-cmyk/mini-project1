@@ -1,4 +1,6 @@
-#ifndef input_h
-#define input_h
-void read_input(char* line,int size);
+#ifndef INPUT_H
+#define INPUT_H
+
+void read_input(char *line, int max_len);
+
 #endif

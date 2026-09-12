@@ -1,5 +1,7 @@
-#ifndef prompt_h
-#define prompt_h
-void init_prompt();
-void printprompt();
+#ifndef PROMPT_H
+#define PROMPT_H
+
+void init_prompt(void);
+void printprompt(void);
+
 #endif

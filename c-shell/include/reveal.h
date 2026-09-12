@@ -1,5 +1,8 @@
-#ifndef reveal_h
-#define reveal_h
+#ifndef REVEAL_H
+#define REVEAL_H
+
 #include "command.h"
-void execute_reveal(Command* cmd);
+
+void execute_reveal(Command *cmd);
+
 #endif

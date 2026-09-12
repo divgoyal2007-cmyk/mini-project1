@@ -5,42 +5,48 @@
 #include <unistd.h>
 #include <pwd.h>
 #include "prompt.h"
-char init_shell[PATH_MAX];
 
-void init_prompt(){
-    if(getcwd(init_shell,sizeof(init_shell))==NULL){
-        perror("getcwd");
-        return;
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+#ifndef HOST_NAME_MAX
+#define HOST_NAME_MAX 256
+#endif
+
+extern char shell_home[];
+
+void init_prompt(void) {
+}
+
+void printprompt(void) {
+    const char *user_name = "user";
+    struct passwd *user = getpwuid(getuid());
+    if (user != NULL && user->pw_name != NULL) {
+        user_name = user->pw_name;
     }
-//printf("%s\n",init_shell);
-}
-void printprompt(){
-   uid_t user_id=getuid();
-    struct passwd *user = getpwuid(user_id);
-   if(user==NULL){
-    perror("getpwuid");
-    return ;
-   }
- //  printf("%s\n",user->pw_name);
- char host_name[_POSIX_HOST_NAME_MAX];
-if( gethostname(host_name,sizeof(host_name))==-1){
-perror("gethostname");
-return;
-}
-char current_dir[PATH_MAX];
-if(getcwd(current_dir,sizeof(current_dir))==NULL){
-    perror("getcwd");
-    return;
-}
-printf("<%s@%s:", user->pw_name, host_name);
-if(strcmp(current_dir,init_shell)==0){
-    printf("~\n");
-}
-else if(strncmp(current_dir,init_shell,strlen(init_shell))==0){
-    printf("~%s\n", current_dir + strlen(init_shell));
-}
-else{
-    printf("%s",current_dir);
-}
- 
+
+    char host_name[HOST_NAME_MAX + 1];
+    if (gethostname(host_name, sizeof(host_name)) == -1) {
+        strcpy(host_name, "unknown");
+    }
+    host_name[HOST_NAME_MAX] = '\0';
+
+    char current_dir[PATH_MAX];
+    if (getcwd(current_dir, sizeof(current_dir)) == NULL) {
+        strcpy(current_dir, "?");
+    }
+
+    size_t home_len = strlen(shell_home);
+
+    printf("<%s@%s:", user_name, host_name);
+    if (home_len > 0 && strcmp(current_dir, shell_home) == 0) {
+        printf("~");
+    } else if (home_len > 0 && strncmp(current_dir, shell_home, home_len) == 0
+               && current_dir[home_len] == '/') {
+        printf("~%s", current_dir + home_len);
+    } else {
+        printf("%s", current_dir);
+    }
+    printf("> ");
+    fflush(stdout);
 }

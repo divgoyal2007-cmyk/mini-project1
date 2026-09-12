@@ -1,108 +1,100 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-#include <limits.h>
-#include "parser.h"
 #include <stdbool.h>
+#include "parser.h"
 
-bool parse_arg(Tokenlist* list,int* index);
-bool parse_cmd(Tokenlist* list,int* index);
-bool parse_target(Tokenlist* list,int* index);
-bool parse_background(Tokenlist* list,int* index);
+static bool parse_arg(Tokenlist *list, int *index);
+static bool parse_cmd(Tokenlist *list, int *index);
+static bool parse_target(Tokenlist *list, int *index);
+static bool parse_background(Tokenlist *list, int *index);
 
-bool parse_line(Tokenlist* list,int* index){
-    if(list->tokens[*index].type==token_eof || *index >= list->size){
-        return true;
+static Tokentype peek_type(Tokenlist *list, int index) {
+    if (index >= list->size) {
+        return token_eof;
     }
-    if(list->tokens[*index].type==token_word){
-        (*index)++;
-        return parse_arg(list,index);
-    }
-    else{
-        return false;
-    }
+    return list->tokens[index].type;
 }
 
-bool parse_arg(Tokenlist* list,int* index){
-    if(list->tokens[*index].type==token_eof){
+static bool parse_line(Tokenlist *list, int *index) {
+    Tokentype t = peek_type(list, *index);
+
+    if (t == token_eof) {
         return true;
     }
-    if(list->tokens[*index].type==token_word){
-         (*index)++;
-        return parse_arg(list,index);
-    }
-    if(list->tokens[*index].type== token_op_gt || list->tokens[*index].type == token_op_lt || list->tokens[*index].type == token_op_gtgt){
-         (*index)++;
-        return parse_target(list,index);
-    }
-    if(list->tokens[*index].type== token_op_pipe || list->tokens[*index].type == token_op_semi){
+    if (t == token_word) {
         (*index)++;
-        return parse_cmd(list,index);
+        return parse_arg(list, index);
     }
-    if(list->tokens[*index].type == token_op_amp){
-         (*index)++;
-        return parse_background(list,index);
-    }
-    else{
-        return false;
-    }
-}
-bool parse_cmd(Tokenlist* list,int* index){
-if(list->tokens[*index].type==token_eof){
     return false;
 }
-if(list->tokens[*index].type==token_word){
-         (*index)++;
-        return parse_arg(list,index);
-    }
-else{
-        return false;
-    }
-}
 
-bool parse_target(Tokenlist* list,int* index){
-    if(list->tokens[*index].type==token_eof){
-    return false;
-}
-if(list->tokens[*index].type==token_word){
-         (*index)++;
-        return parse_arg(list,index);
-    }
-else{
-        return false;
-    }
-}
-bool parse_background(Tokenlist* list,int* index){
-    if(list->tokens[*index].type==token_eof || *index >= list->size){
+static bool parse_arg(Tokenlist *list, int *index) {
+    Tokentype t = peek_type(list, *index);
+
+    if (t == token_eof) {
         return true;
     }
-    if(list->tokens[*index].type==token_word){
-         (*index)++;
-        return parse_arg(list,index);
+    if (t == token_word) {
+        (*index)++;
+        return parse_arg(list, index);
     }
-    else{
+    if (t == token_op_lt || t == token_op_gt || t == token_op_gtgt) {
+        (*index)++;
+        return parse_target(list, index);
+    }
+    if (t == token_op_pipe || t == token_op_semi) {
+        (*index)++;
+        return parse_cmd(list, index);
+    }
+    if (t == token_op_amp) {
+        (*index)++;
+        return parse_background(list, index);
+    }
+    return false;
+}
+
+static bool parse_cmd(Tokenlist *list, int *index) {
+    if (peek_type(list, *index) == token_word) {
+        (*index)++;
+        return parse_arg(list, index);
+    }
+    return false;
+}
+
+static bool parse_target(Tokenlist *list, int *index) {
+    if (peek_type(list, *index) == token_word) {
+        (*index)++;
+        return parse_arg(list, index);
+    }
+    return false;
+}
+
+static bool parse_background(Tokenlist *list, int *index) {
+    Tokentype t = peek_type(list, *index);
+
+    if (t == token_eof) {
+        return true;
+    }
+    if (t == token_word) {
+        (*index)++;
+        return parse_arg(list, index);
+    }
+    return false;
+}
+
+bool validate(Tokenlist *list) {
+    if (list == NULL || list->size == 0) {
         return false;
     }
-}
-bool validate(Tokenlist* list){
-    if(list==NULL || list->size==0)return false;
-    for(int i=0;i<list->size;i++){
-        if(list->tokens[i].type==token_error){
-            return false;
-            break;
-        }
-    }
-    int index=0;
-    bool temp=parse_line(list,&index);
-    if(temp==true){
-        if(list->tokens[index].type==token_eof){
-return true;
-        }
-        else{
+    for (int i = 0; i < list->size; i++) {
+        if (list->tokens[i].type == token_error) {
             return false;
         }
     }
-    else{
+
+    int index = 0;
+    if (!parse_line(list, &index)) {
         return false;
     }
+    return peek_type(list, index) == token_eof;
 }

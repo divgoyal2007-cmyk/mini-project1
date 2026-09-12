@@ -1,15 +1,9 @@
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include "input.h"
 
-void read_input(char* line,int size){
-if(fgets(line,size,stdin)==NULL){
-    printf("\n");
-    exit(0);
-}
-int len=strlen(line);
-if(line[len-1]=='\n' && len>0){
-    line[len-1]='\0';
-}
+void read_input(char *line, int max_len) {
+    if (fgets(line, max_len, stdin) == NULL) {
+        line[0] = '\0';
+    }
 }

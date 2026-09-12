@@ -1,17 +1,36 @@
-#ifndef command_h
-#define command_h
+#ifndef COMMAND_H
+#define COMMAND_H
+
 #include <stdbool.h>
 #include "lexer.h"
-typedef struct{
-    char* name;
-    char *argv[512];     
-    int argc;            // Number of arguments
-    char *input_file;    // Target file if '<' was used
-    char *output_file;   // Target file if '>' or '>>' was used
-    bool append_output;  // True if '>>', False if '>'
-    bool background;     // True if '&' was used
+
+#define MAX_ARGS   512
+#define MAX_REDIR  32
+#define MAX_STAGES 64
+#define MAX_GROUPS 64
+
+typedef struct {
+    char *name;
+    char *argv[MAX_ARGS];
+    int  argc;
+    char *in_files[MAX_REDIR];
+    int  in_count;
+    char *out_files[MAX_REDIR];
+    bool out_append[MAX_REDIR];
+    int  out_count;
 } Command;
 
-Command* extract_command(Tokenlist* list);
-void free_command(Command* cmd);
+typedef struct {
+    Command *stages[MAX_STAGES];
+    int      nstages;
+    bool     background;
+} Pipeline;
+
+typedef struct {
+    Pipeline *groups[MAX_GROUPS];
+    int       ngroups;
+} CommandLine;
+ 
+CommandLine *extract_line(Tokenlist *list);
+void free_command_line(CommandLine *cl);
 #endif

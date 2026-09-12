@@ -1,7 +1,9 @@
-#ifndef parser_h
-#define parser_h
-#include <stdio.h>
+#ifndef PARSER_H
+#define PARSER_H
+
 #include <stdbool.h>
 #include "lexer.h"
-bool validate(Tokenlist* list);
+
+bool validate(Tokenlist *list);
+
 #endif
