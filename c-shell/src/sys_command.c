@@ -75,7 +75,14 @@ static void run_exec(Command *cmd) {
     fprintf(stderr, "cshell: command not found (%s)\n", cmd_name);
     exit(NOT_FOUND_EXIT);
 }
-
+static void reset_job_control_signals(void){
+    signal(SIGINT,SIG_DFL);
+    signal(SIGQUIT,SIG_DFL);
+    signal(SIGTSTP,SIG_DFL);
+    signal(SIGTTIN,SIG_DFL);
+    signal(SIGTTOU,SIG_DFL);
+    signal(SIGCHLD,SIG_DFL);
+}
 static void child_exec(Command *cmd,int in_fd,int out_fd,int pipes[][2],int num_pipes,bool background){
 if(cmd->in_count==1){
     in_fd=open(cmd->in_files[0],O_RDONLY);
@@ -167,6 +174,7 @@ static void launch_pipeline(Pipeline *p, bool background, pid_t *pids, int pipes
         pid_t pid = fork();
  
         if (pid == 0) {
+            reset_job_control_signals();
             int in_fd  = (i > 0) ? pipes[i - 1][0] : STDIN_FILENO;
             int out_fd = (i < num_pipes) ? pipes[i][1] : STDOUT_FILENO;
             child_exec(cmd, in_fd, out_fd, pipes, num_pipes, background);
@@ -187,7 +195,7 @@ bool execute_pipeline_fg(Pipeline *p) {
     // of this foreground command's output; we reap our own pids directly
     // below, then unblock, which flushes any pending background reports.
     sigset_t old_mask;
-    jobs_block_sigchild(&old_mask);
+    jobs_block_sigchld(&old_mask);
  
     pid_t pids[MAX_STAGES];
     int pipes[MAX_STAGES][2];
@@ -203,7 +211,7 @@ bool execute_pipeline_fg(Pipeline *p) {
         }
     }
  
-    jobs_unblock_sigchild(&old_mask);
+    jobs_unblock_sigchld(&old_mask);
     return single_not_found;
 }
  
@@ -216,7 +224,7 @@ void execute_pipeline_bg(Pipeline *p) {
     int pipes[MAX_STAGES][2];
     launch_pipeline(p, true, pids, pipes);
  
-    int job_number = jobs_add(pids, p->nstages, p->stages[0]->name);
+    int job_number = jobs_add(pids, p, p->stages[0]->name);
     if (job_number > 0) {
         printf("[%d] %d\n", job_number, (int)pids[0]);
         fflush(stdout);
