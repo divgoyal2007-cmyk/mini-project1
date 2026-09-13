@@ -1,15 +1,19 @@
 #include "sys_command.h"
+#include "jobs.h"
+#include "terminal.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <signal.h>
+#include <errno.h>
 #include <sys/wait.h>
-#include <stdbool.h>
 #include <fcntl.h>
 #include <sys/stat.h>
-#include "jobs.h"
 
-#define NOT_FOUND_EXIT 127
+#define NOT_FOUND_EXIT 127   // sentinel exit code meaning "couldn't exec"
+
+// close every pipe fd -- used by parent (all of them) and children (leftovers)
 static void close_unused_pipes(int pipes[][2], int num_pipes) {
     for (int i = 0; i < num_pipes; i++) {
         close(pipes[i][0]);
@@ -17,35 +21,30 @@ static void close_unused_pipes(int pipes[][2], int num_pipes) {
     }
 }
 
-
+// concatenate multiple '<' files into one temp stream, in order
 static int build_combined_input(Command *cmd) {
     char tmpl[] = "/tmp/.cshell_in_XXXXXX";
     int tmp_fd = mkstemp(tmpl);
-    if (tmp_fd < 0) {
-        perror("cshell");
-        return -1;
-    }
-    unlink(tmpl); // fd stays valid, no leftover file on disk
+    if (tmp_fd < 0) { perror("cshell"); return -1; }
+    unlink(tmpl);   // fd stays open and usable, no leftover file on disk
 
     for (int k = 0; k < cmd->in_count; k++) {
         int fd = open(cmd->in_files[k], O_RDONLY);
         if (fd < 0) {
-            printf("cshell: no such file or directory\n");
+            fprintf(stderr, "cshell: no such file or directory\n");
             close(tmp_fd);
             return -1;
         }
         char buf[4096];
         ssize_t n;
-        while ((n = read(fd, buf, sizeof(buf))) > 0) {
-            write(tmp_fd, buf, n);
-        }
+        while ((n = read(fd, buf, sizeof(buf))) > 0) write(tmp_fd, buf, n);
         close(fd);
     }
     lseek(tmp_fd, 0, SEEK_SET);
     return tmp_fd;
 }
 
-// Never returns: execs cmd, or prints the "not found" error and exits.
+// never returns: execs cmd, or prints "not found" (to stderr) and exits
 static void run_exec(Command *cmd) {
     char *cmd_name = cmd->argv[0];
     bool force_path = false;
@@ -57,80 +56,80 @@ static void run_exec(Command *cmd) {
     }
 
     if (strchr(cmd_name, '/') != NULL) {
-        execv(cmd_name, cmd->argv);
+        execv(cmd_name, cmd->argv);              // literal path
     } else if (force_path) {
-        execvp(cmd_name, cmd->argv);
+        execvp(cmd_name, cmd->argv);              // '%name' -> PATH only
     } else {
         char cwd[1030];
         if (getcwd(cwd, sizeof(cwd)) != NULL) {
             char cwd_path[2060];
             snprintf(cwd_path, sizeof(cwd_path), "%s/%s", cwd, cmd_name);
-            if (access(cwd_path, X_OK) == 0) {
-                execv(cwd_path, cmd->argv);
-            }
+            if (access(cwd_path, X_OK) == 0) execv(cwd_path, cmd->argv);   // cwd first
         }
-        execvp(cmd_name, cmd->argv);
+        execvp(cmd_name, cmd->argv);              // then PATH
     }
 
+    // stderr, not stdout -- so this is never swallowed by pipe redirection
     fprintf(stderr, "cshell: command not found (%s)\n", cmd_name);
     exit(NOT_FOUND_EXIT);
 }
-static void reset_job_control_signals(void){
-    signal(SIGINT,SIG_DFL);
-    signal(SIGQUIT,SIG_DFL);
-    signal(SIGTSTP,SIG_DFL);
-    signal(SIGTTIN,SIG_DFL);
-    signal(SIGTTOU,SIG_DFL);
-    signal(SIGCHLD,SIG_DFL);
+
+// undo the shell's own signal customizations in every child, before exec.
+// SIG_IGN survives exec() (unlike a real handler), so without this every
+// program we run would inherit the shell's SIGTTIN/SIGTTOU ignoring --
+// breaking real job-control behavior (e.g. bg jobs never stopping on tty read)
+static void reset_job_control_signals(void) {
+    signal(SIGINT,  SIG_DFL);
+    signal(SIGQUIT, SIG_DFL);
+    signal(SIGTSTP, SIG_DFL);
+    signal(SIGTTIN, SIG_DFL);
+    signal(SIGTTOU, SIG_DFL);
+    signal(SIGCHLD, SIG_DFL);
 }
-static void child_exec(Command *cmd,int in_fd,int out_fd,int pipes[][2],int num_pipes,bool background){
-if(cmd->in_count==1){
-    in_fd=open(cmd->in_files[0],O_RDONLY);
-    if(in_fd < 0){
-        fprintf(stderr, "cshell: no such file or directory\n");
-        exit(1);
+
+// sets up one stage's redirection, then execs it. never returns.
+static void child_exec(Command *cmd, int in_fd, int out_fd,
+                        int pipes[][2], int num_pipes) {
+    // ---------- input ----------
+    if (cmd->in_count == 1) {
+        in_fd = open(cmd->in_files[0], O_RDONLY);
+        if (in_fd < 0) { fprintf(stderr, "cshell: no such file or directory\n"); exit(1); }
+    } else if (cmd->in_count > 1) {
+        in_fd = build_combined_input(cmd);
+        if (in_fd < 0) exit(1);
     }
-}
-else if(cmd->in_count > 1){
-    in_fd=build_combined_input(cmd);
-    if(in_fd < 0)exit(1);
-}
-if(background && in_fd == STDIN_FILENO){
-    int devnull=open("/dev/null",O_RDONLY);
-    if(devnull >=0)in_fd=devnull;
-}
- if (cmd->out_count <= 1) {
+    // NOTE: no /dev/null trick anymore. With real process groups + terminal
+    // control, a background job that tries to read the real terminal will
+    // correctly get SIGTTIN from the kernel and stop -- matching E1's
+    // "cat ... Stopped" example, and properly satisfying D2 #12.
+
+    // ---------- output ----------
+    if (cmd->out_count <= 1) {
         if (cmd->out_count == 1) {
             int flags = O_WRONLY | O_CREAT;
             flags |= cmd->out_append[0] ? O_APPEND : O_TRUNC;
             out_fd = open(cmd->out_files[0], flags, 0644);
-            if (out_fd < 0) {
-                printf("cshell: unable to create file for writing\n");
-                exit(1);
-            }
+            if (out_fd < 0) { fprintf(stderr, "cshell: unable to create file for writing\n"); exit(1); }
         }
- 
         if (in_fd != STDIN_FILENO)   { dup2(in_fd, STDIN_FILENO); close(in_fd); }
         if (out_fd != STDOUT_FILENO) { dup2(out_fd, STDOUT_FILENO); close(out_fd); }
         close_unused_pipes(pipes, num_pipes);
- 
         run_exec(cmd);
-    }
-else{
-    int out_fds[MAX_REDIR];
-    for(int k=0;k<cmd->out_count;k++){
-        int flags=O_WRONLY | O_CREAT;
-        flags |= cmd->out_append[k] ? O_APPEND : O_TRUNC;
-        out_fds[k]=open(cmd->out_files[k],flags, 0644);
-        if (out_fds[k] < 0) {
-                printf("cshell: unable to create file for writing\n");
-                exit(1);
-            }
-    }
-    int tee_pipe[2];
-    pipe(tee_pipe);
-    pid_t tee_pid=fork();
-    if (tee_pid == 0) {
+    } else {
+        // multiple '>' targets -- tee via a grandchild
+        int out_fds[MAX_REDIR];
+        for (int k = 0; k < cmd->out_count; k++) {
+            int flags = O_WRONLY | O_CREAT;
+            flags |= cmd->out_append[k] ? O_APPEND : O_TRUNC;
+            out_fds[k] = open(cmd->out_files[k], flags, 0644);
+            if (out_fds[k] < 0) { fprintf(stderr, "cshell: unable to create file for writing\n"); exit(1); }
+        }
+
+        int tee_pipe[2];
+        pipe(tee_pipe);
+        pid_t tee_pid = fork();
+
+        if (tee_pid == 0) {
             close(tee_pipe[0]);
             if (in_fd != STDIN_FILENO) { dup2(in_fd, STDIN_FILENO); close(in_fd); }
             dup2(tee_pipe[1], STDOUT_FILENO);
@@ -139,10 +138,10 @@ else{
             close_unused_pipes(pipes, num_pipes);
             run_exec(cmd);
         }
-    close(tee_pipe[1]);
-     if (in_fd != STDIN_FILENO) close(in_fd);
-        char buf[4096];
-        ssize_t n;
+
+        close(tee_pipe[1]);
+        if (in_fd != STDIN_FILENO) close(in_fd);
+        char buf[4096]; ssize_t n;
         while ((n = read(tee_pipe[0], buf, sizeof(buf))) > 0) {
             for (int k = 0; k < cmd->out_count; k++) write(out_fds[k], buf, n);
         }
@@ -151,15 +150,14 @@ else{
         close_unused_pipes(pipes, num_pipes);
         waitpid(tee_pid, NULL, 0);
         exit(0);
-}
+    }
 }
 
-
-// Forks every stage of the pipeline, wiring pipes between them.
-// Fills pids[0..p->nstages) with the child pids (or -1 on pipe failure).
-static void launch_pipeline(Pipeline *p, bool background, pid_t *pids, int pipes[][2]) {
+// forks every stage, wires up pipes, AND puts them all in one process group
+static void launch_pipeline(Pipeline *p, pid_t *pids, int pipes[][2]) {
     int num_pipes = p->nstages - 1;
- 
+    pid_t pgid = 0;   // becomes stage 0's pid once known
+
     for (int i = 0; i < num_pipes; i++) {
         if (pipe(pipes[i]) < 0) {
             perror("cshell: pipe failed");
@@ -168,67 +166,93 @@ static void launch_pipeline(Pipeline *p, bool background, pid_t *pids, int pipes
             return;
         }
     }
- 
+
     for (int i = 0; i < p->nstages; i++) {
         Command *cmd = p->stages[i];
         pid_t pid = fork();
- 
+
         if (pid == 0) {
-            reset_job_control_signals();
+            pid_t my_pgid = (i == 0) ? getpid() : pgid;
+            setpgid(0, my_pgid);          // E1 #1: child side
+            reset_job_control_signals();   // let this program behave normally
+
             int in_fd  = (i > 0) ? pipes[i - 1][0] : STDIN_FILENO;
             int out_fd = (i < num_pipes) ? pipes[i][1] : STDOUT_FILENO;
-            child_exec(cmd, in_fd, out_fd, pipes, num_pipes, background);
-            _exit(1); // unreachable: child_exec never returns
+            child_exec(cmd, in_fd, out_fd, pipes, num_pipes);
+            _exit(1);   // unreachable safety net
         }
+
+        if (i == 0) pgid = pid;
+        setpgid(pid, pgid);   // E1 #1: parent side too (avoids a race)
         pids[i] = pid;
     }
- 
+
     close_unused_pipes(pipes, num_pipes);
 }
- 
+
 bool execute_pipeline_fg(Pipeline *p) {
-    if (p == NULL || p->nstages == 0 || p->stages[0]->argc == 0) {
-        return false;
-    }
- 
-    // Block SIGCHLD so no background-job completion prints in the middle
-    // of this foreground command's output; we reap our own pids directly
-    // below, then unblock, which flushes any pending background reports.
+    if (p == NULL || p->nstages == 0 || p->stages[0]->argc == 0) return false;
+
     sigset_t old_mask;
-    jobs_block_sigchld(&old_mask);
- 
+    jobs_block_sigchld(&old_mask);   // don't let bg completions print mid-command
+
     pid_t pids[MAX_STAGES];
     int pipes[MAX_STAGES][2];
-    launch_pipeline(p, false, pids, pipes);
- 
+    launch_pipeline(p, pids, pipes);
+
+    pid_t pgid = pids[0];
+    int job_number = jobs_add(pids, p, false);   // track it in case it gets Stopped
+
+    terminal_give_to(pgid);   // E2 #2: this group now owns the terminal
+
     bool single_not_found = false;
+    bool stopped = false;
+
     for (int i = 0; i < p->nstages; i++) {
         if (pids[i] < 0) continue;
         int status;
-        waitpid(pids[i], &status, 0);
+        pid_t w;
+        // retry on EINTR -- a signal hitting the SHELL itself (not this
+        // child) must not make us read status before waitpid actually set it
+        do {
+            w = waitpid(pids[i], &status, WUNTRACED);
+        } while (w < 0 && errno == EINTR);
+        if (w < 0) continue;   // real error (e.g. ECHILD) -- give up on this one
+
+        if (WIFSTOPPED(status)) {
+            stopped = true;   // rest of the group got the same signal
+            break;
+        }
         if (p->nstages == 1 && WIFEXITED(status) && WEXITSTATUS(status) == NOT_FOUND_EXIT) {
-            single_not_found = true;
+            single_not_found = true;   // D1's stop-the-sequence signal
         }
     }
- 
+
+    terminal_reclaim();   // E2 #3: shell owns the terminal again
+
+    if (stopped) {
+        jobs_mark_stopped(pgid);
+        Job *j = jobs_find_by_pgid(pgid);
+        printf("[%d] + Stopped    %s\n", job_number, j ? j->cmdline : "");
+        fflush(stdout);
+    } else {
+        jobs_remove(pgid);   // finished normally -- nothing left to track
+    }
+
     jobs_unblock_sigchld(&old_mask);
     return single_not_found;
 }
- 
+
 void execute_pipeline_bg(Pipeline *p) {
-    if (p == NULL || p->nstages == 0 || p->stages[0]->argc == 0) {
-        return;
-    }
- 
+    if (p == NULL || p->nstages == 0 || p->stages[0]->argc == 0) return;
+
     pid_t pids[MAX_STAGES];
     int pipes[MAX_STAGES][2];
-    launch_pipeline(p, true, pids, pipes);
- 
-    int job_number = jobs_add(pids, p, p->stages[0]->name);
+    launch_pipeline(p, pids, pipes);   // never given the terminal -> stays background
+
+    int job_number = jobs_add(pids, p, true);
     if (job_number > 0) {
-        printf("[%d] %d\n", job_number, (int)pids[0]);
+        printf("[%d] %d\n", job_number, (int)pids[0]);   // D2 #3
         fflush(stdout);
     }
 }
- 
-  
