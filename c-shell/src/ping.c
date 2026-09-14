@@ -15,13 +15,13 @@ static bool is_nonneg_int(const char *s) {
 
 void execute_ping(Command* cmd){
     if(cmd->argc!=3){
-        printf("ping : invalid syntax\n");
+        printf("ping: invalid syntax\n");
         return;
     }
     const char *target_str=cmd->argv[1];
     const char *sig_str=cmd->argv[2];
     if(!is_nonneg_int(sig_str)){
-        printf("ping : invalid syntax\n");
+        printf("ping: invalid syntax\n");
         return;
     }
     long typed_signal=strtol(sig_str,NULL,10);
@@ -37,7 +37,7 @@ void execute_ping(Command* cmd){
     {
         Job* j=jobs_find_by_number((int)target_num);
         if(j==NULL){
-            printf("ping : no such process found\n");
+            printf("ping: no such process found\n");
             return;
         }
         if (kill(-j->pgid, actual_signal) < 0) {
@@ -49,11 +49,11 @@ void execute_ping(Command* cmd){
         pid_t pid=(pid_t)target_num;
         Job* j=jobs_find_by_pid(pid);
         if(j==NULL){
-            printf("ping : no such process found\n");
+            printf("ping: no such process found\n");
             return;
         }
         if(kill(pid,actual_signal)< 0){
-            printf("ping : no sscuh process found\n");
+            printf("ping: no such process found\n");
             return;
         }
     }

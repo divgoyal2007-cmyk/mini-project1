@@ -1,6 +1,10 @@
 #include "sys_command.h"
 #include "jobs.h"
 #include "terminal.h"
+#include "hop.h"
+#include "reveal.h"
+#include "peek.h"
+#include "locate.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,6 +46,17 @@ static int build_combined_input(Command *cmd) {
     }
     lseek(tmp_fd, 0, SEEK_SET);
     return tmp_fd;
+}
+
+// builtins run as a normal function call, not exec'd -- lets them work as
+// pipeline stages (e.g. "reveal | peek -n"). runs only inside a fork'd
+// child, so it never affects the real shell's own state (cwd, etc).
+static bool run_builtin_in_child(Command *cmd) {
+    if (strcmp(cmd->name, "hop") == 0)    { execute_hop(cmd);    return true; }
+    if (strcmp(cmd->name, "reveal") == 0) { execute_reveal(cmd); return true; }
+    if (strcmp(cmd->name, "peek") == 0)   { execute_peek(cmd);   return true; }
+    if (strcmp(cmd->name, "locate") == 0) { execute_locate(cmd); return true; }
+    return false;
 }
 
 // never returns: execs cmd, or prints "not found" (to stderr) and exits
@@ -90,7 +105,7 @@ static void reset_job_control_signals(void) {
 // sets up one stage's redirection, then execs it. never returns.
 static void child_exec(Command *cmd, int in_fd, int out_fd,
                         int pipes[][2], int num_pipes) {
-    // ---------- input ----------
+
     if (cmd->in_count == 1) {
         in_fd = open(cmd->in_files[0], O_RDONLY);
         if (in_fd < 0) { fprintf(stderr, "cshell: no such file or directory\n"); exit(1); }
@@ -100,10 +115,9 @@ static void child_exec(Command *cmd, int in_fd, int out_fd,
     }
     // NOTE: no /dev/null trick anymore. With real process groups + terminal
     // control, a background job that tries to read the real terminal will
-    // correctly get SIGTTIN from the kernel and stop -- matching E1's
-    // "cat ... Stopped" example, and properly satisfying D2 #12.
+    
 
-    // ---------- output ----------
+    
     if (cmd->out_count <= 1) {
         if (cmd->out_count == 1) {
             int flags = O_WRONLY | O_CREAT;
@@ -114,6 +128,7 @@ static void child_exec(Command *cmd, int in_fd, int out_fd,
         if (in_fd != STDIN_FILENO)   { dup2(in_fd, STDIN_FILENO); close(in_fd); }
         if (out_fd != STDOUT_FILENO) { dup2(out_fd, STDOUT_FILENO); close(out_fd); }
         close_unused_pipes(pipes, num_pipes);
+        if (run_builtin_in_child(cmd)) exit(0);
         run_exec(cmd);
     } else {
         // multiple '>' targets -- tee via a grandchild
@@ -136,7 +151,8 @@ static void child_exec(Command *cmd, int in_fd, int out_fd,
             close(tee_pipe[1]);
             for (int k = 0; k < cmd->out_count; k++) close(out_fds[k]);
             close_unused_pipes(pipes, num_pipes);
-            run_exec(cmd);
+            if (run_builtin_in_child(cmd)) exit(0);
+        run_exec(cmd);
         }
 
         close(tee_pipe[1]);
@@ -173,7 +189,7 @@ static void launch_pipeline(Pipeline *p, pid_t *pids, int pipes[][2]) {
 
         if (pid == 0) {
             pid_t my_pgid = (i == 0) ? getpid() : pgid;
-            setpgid(0, my_pgid);          // E1 #1: child side
+            setpgid(0, my_pgid);         
             reset_job_control_signals();   // let this program behave normally
 
             int in_fd  = (i > 0) ? pipes[i - 1][0] : STDIN_FILENO;
@@ -183,7 +199,7 @@ static void launch_pipeline(Pipeline *p, pid_t *pids, int pipes[][2]) {
         }
 
         if (i == 0) pgid = pid;
-        setpgid(pid, pgid);   // E1 #1: parent side too (avoids a race)
+        setpgid(pid, pgid);  
         pids[i] = pid;
     }
 
@@ -203,8 +219,7 @@ bool execute_pipeline_fg(Pipeline *p) {
     pid_t pgid = pids[0];
     int job_number = jobs_add(pids, p, false);   // track it in case it gets Stopped
 
-    terminal_give_to(pgid);   // E2 #2: this group now owns the terminal
-
+    terminal_give_to(pgid);   
     bool single_not_found = false;
     bool stopped = false;
 
@@ -224,11 +239,11 @@ bool execute_pipeline_fg(Pipeline *p) {
             break;
         }
         if (p->nstages == 1 && WIFEXITED(status) && WEXITSTATUS(status) == NOT_FOUND_EXIT) {
-            single_not_found = true;   // D1's stop-the-sequence signal
+            single_not_found = true;   
         }
     }
 
-    terminal_reclaim();   // E2 #3: shell owns the terminal again
+    terminal_reclaim();   
 
     if (stopped) {
         jobs_mark_stopped(pgid);
@@ -252,7 +267,7 @@ void execute_pipeline_bg(Pipeline *p) {
 
     int job_number = jobs_add(pids, p, true);
     if (job_number > 0) {
-        printf("[%d] %d\n", job_number, (int)pids[0]);   // D2 #3
+        printf("[%d] %d\n", job_number, (int)pids[0]);   
         fflush(stdout);
     }
 }

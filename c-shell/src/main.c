@@ -19,6 +19,8 @@
 #include "activities.h"
 #include "resume.h"
 #include "ping.h"
+#include "spy.h"
+#include "snoop.h"
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
@@ -29,7 +31,7 @@
 char shell_home[PATH_MAX];
 char prev_dir[PATH_MAX];
 
-// common exit path -- always warn stopped/bg jobs before leaving (E2 #10)
+
 static void shell_exit(void) {
     jobs_hangup_all();
     exit(0);
@@ -51,13 +53,15 @@ static void run_group(Pipeline *p, bool *stop_sequence) {
         if (strcmp(cmd->name, "activities") == 0) { execute_activities(cmd); return; }
         if (strcmp(cmd->name, "resume") == 0)     { execute_resume(cmd);     return; }
         if (strcmp(cmd->name, "ping") == 0)       { execute_ping(cmd);       return; }
+        if (strcmp(cmd->name, "spy") == 0)        { execute_spy(cmd);        return; }
+        if (strcmp(cmd->name, "snoop") == 0)      { execute_snoop(cmd);      return; }
     }
 
     if (p->background) {
         execute_pipeline_bg(p);
     } else {
         if (execute_pipeline_fg(p)) {
-            *stop_sequence = true;   // D1: lone command failed to start
+            *stop_sequence = true;   
         }
     }
 }
@@ -86,14 +90,14 @@ int main(void) {
 
         if (r == INPUT_EOF) {
             if (eof_warned) {
-                shell_exit();   // E2 #8: second Ctrl-D in a row -> exit anyway
+                shell_exit();   // second Ctrl-D in a row -> exit anyway
             }
             if (jobs_any_stopped()) {
                 printf("\ncshell: there are stopped jobs\n");   // E2 #7
                 eof_warned = true;
                 continue;
             }
-            shell_exit();   // E2 #6: plain EOF, nothing stopped -> exit
+            shell_exit();   // plain EOF, nothing stopped -> exit
         }
 
         eof_warned = false;   // got real input -> reset the two-strike counter

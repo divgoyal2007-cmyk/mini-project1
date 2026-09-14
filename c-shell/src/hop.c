@@ -33,16 +33,17 @@ static hop_entry entries[HOP_MAX_ENTRIES];
 static size_t    entry_count = 0;
 static bool      history_loaded = false;
 
+// ~ must mean the SHELL's own launch directory (per spec), not the OS's
+// real $HOME -- those are different concepts and this implementation was
+// conflating them.
 static const char *get_home_dir(void) {
-    const char *home = getenv("HOME");
-    if (home == NULL) {
-        extern char shell_home[];
-        return shell_home;
-    }
-    return home;
+    extern char shell_home[];
+    return shell_home;
 }
 
 static void history_file_path(char *buf, size_t size) {
+    // history persistence deliberately DOES use the real $HOME, so it
+    // survives across shell launches from different directories
     const char *base = getenv("HOME");
     if (base == NULL || base[0] == '\0') {
         base = get_home_dir();
